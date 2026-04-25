@@ -24,6 +24,14 @@ export default function ChoreHistory() {
   // Id del log attualmente in fase di cancellazione (per disabilitare il bottone)
   const [deletingId, setDeletingId] = useState(null)
 
+  // Stato della modalità "modifica nota":
+  // - editingId:    id del log che si sta modificando (null = nessuno in editing)
+  // - editingNotes: testo corrente nella textarea di modifica
+  // - savingNoteId: id del log per cui è in corso il salvataggio (disabilita "Salva")
+  const [editingId, setEditingId] = useState(null)
+  const [editingNotes, setEditingNotes] = useState('')
+  const [savingNoteId, setSavingNoteId] = useState(null)
+
   // mappa id → profilo per mostrare foto/nome/colore sulle righe
   const profileById = useMemo(() => {
     const m = new Map()
@@ -79,9 +87,10 @@ export default function ChoreHistory() {
             }
             return prev
           })
-          // se il log eliminato era quello aperto, chiudo il pannello
+          // se il log eliminato era quello aperto/in editing, chiudo i pannelli
           if (payload.eventType === 'DELETE') {
             setExpandedId((curr) => (curr === payload.old.id ? null : curr))
+            setEditingId((curr) => (curr === payload.old.id ? null : curr))
           }
         }
       )
@@ -92,6 +101,10 @@ export default function ChoreHistory() {
 
   function toggleExpanded(id) {
     setExpandedId((curr) => (curr === id ? null : id))
+    // Cambiando riga (o chiudendola) abbandono qualsiasi modifica in corso:
+    // tenere aperta una textarea "orfana" sarebbe confuso.
+    setEditingId(null)
+    setEditingNotes('')
   }
 
   async function handleDelete(log) {
@@ -119,6 +132,52 @@ export default function ChoreHistory() {
       alert('Errore nella cancellazione: ' + error.message)
     }
     setDeletingId(null)
+  }
+
+  function startEditing(log) {
+    // Apro la textarea precompilata con la nota attuale (vuota se non c'era).
+    setEditingId(log.id)
+    setEditingNotes(log.notes ?? '')
+  }
+
+  function cancelEditing() {
+    setEditingId(null)
+    setEditingNotes('')
+  }
+
+  async function handleSaveNote(log) {
+    // Normalizzo: trim degli spazi; se vuoto salvo null così la nota sparisce.
+    const trimmed = editingNotes.trim()
+    const newNotes = trimmed === '' ? null : trimmed
+    const prevNotes = log.notes ?? null
+
+    // Niente è cambiato → chiudo l'editing senza fare richieste inutili.
+    if (newNotes === prevNotes) {
+      cancelEditing()
+      return
+    }
+
+    setSavingNoteId(log.id)
+    // update ottimistico: aggiorno la nota nella UI prima della risposta server
+    setLogs((prev) =>
+      prev.map((l) => (l.id === log.id ? { ...l, notes: newNotes } : l))
+    )
+    setEditingId(null)
+    setEditingNotes('')
+
+    const { error } = await supabase
+      .from('chore_logs')
+      .update({ notes: newNotes })
+      .eq('id', log.id)
+
+    if (error) {
+      // rollback: rimetto la nota com'era prima della modifica
+      setLogs((prev) =>
+        prev.map((l) => (l.id === log.id ? { ...l, notes: prevNotes } : l))
+      )
+      alert('Errore nel salvataggio della nota: ' + error.message)
+    }
+    setSavingNoteId(null)
   }
 
   const filtered = useMemo(() => {
@@ -173,6 +232,8 @@ export default function ChoreHistory() {
             const p = profileById.get(log.profile_id)
             const isOpen = expandedId === log.id
             const isDeleting = deletingId === log.id
+            const isEditing = editingId === log.id
+            const isSavingNote = savingNoteId === log.id
             return (
               <li
                 key={log.id}
@@ -184,7 +245,7 @@ export default function ChoreHistory() {
                     Uso <button> per accessibilità (tastiera/screen reader). */}
                 <button
                   type="button"
-                  onClick={() => toggleExpanded(log.id)}
+                  onClick={() => { if (!isEditing) toggleExpanded(log.id) }}
                   className="w-full p-3 flex items-start gap-3 text-left"
                   aria-expanded={isOpen}
                 >
@@ -202,31 +263,71 @@ export default function ChoreHistory() {
                         {timeAgo(log.done_at)}
                       </div>
                     </div>
-                    {log.notes && (
+                    {log.notes && !isEditing && (
                       <div className="text-sm text-muted mt-1 break-words">{log.notes}</div>
                     )}
                   </div>
                 </button>
 
-                {/* Mini-pannello azioni: appare solo quando la riga è aperta */}
+                {/* Mini-pannello: ha due "modi"
+                    1) elenco azioni  (Annulla / Modifica nota / Elimina)
+                    2) form di modifica nota (textarea + Annulla / Salva)    */}
                 {isOpen && (
-                  <div className="border-t border-sand px-3 py-2 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setExpandedId(null)}
-                      className="rounded-xl px-3 py-1.5 text-sm text-muted hover:text-ink"
-                    >
-                      Annulla
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(log)}
-                      disabled={isDeleting}
-                      className="rounded-xl px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-60"
-                    >
-                      {isDeleting ? 'Elimino…' : 'Elimina'}
-                    </button>
-                  </div>
+                  isEditing ? (
+                    <div className="border-t border-sand px-3 py-2 space-y-2">
+                      <textarea
+                        value={editingNotes}
+                        onChange={(e) => setEditingNotes(e.target.value)}
+                        rows={3}
+                        autoFocus
+                        placeholder="Aggiungi una nota…"
+                        className="w-full rounded-xl border border-sand bg-white px-3 py-2 text-sm resize-none"
+                      />
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={cancelEditing}
+                          className="rounded-xl px-3 py-1.5 text-sm text-muted hover:text-ink"
+                        >
+                          Annulla
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveNote(log)}
+                          disabled={isSavingNote}
+                          className="rounded-xl px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+                          style={{ background: '#2B2522' }}
+                        >
+                          {isSavingNote ? 'Salvo…' : 'Salva'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="border-t border-sand px-3 py-2 flex flex-wrap items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedId(null)}
+                        className="rounded-xl px-3 py-1.5 text-sm text-muted hover:text-ink"
+                      >
+                        Annulla
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startEditing(log)}
+                        className="rounded-xl px-3 py-1.5 text-sm text-ink hover:bg-sand/40"
+                      >
+                        {log.notes ? 'Modifica nota' : 'Aggiungi nota'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(log)}
+                        disabled={isDeleting}
+                        className="rounded-xl px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-60"
+                      >
+                        {isDeleting ? 'Elimino…' : 'Elimina'}
+                      </button>
+                    </div>
+                  )
                 )}
               </li>
             )
