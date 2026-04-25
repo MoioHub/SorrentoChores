@@ -18,6 +18,12 @@ export default function ChoreHistory() {
   const [filterProfile, setFilterProfile] = useState('all')
   const [filterType, setFilterType] = useState('all')
 
+  // Quale riga è "espansa" (con il mini-pannello azioni visibile).
+  // null = nessuna riga aperta.
+  const [expandedId, setExpandedId] = useState(null)
+  // Id del log attualmente in fase di cancellazione (per disabilitare il bottone)
+  const [deletingId, setDeletingId] = useState(null)
+
   // mappa id → profilo per mostrare foto/nome/colore sulle righe
   const profileById = useMemo(() => {
     const m = new Map()
@@ -55,22 +61,65 @@ export default function ChoreHistory() {
         (payload) => {
           setLogs((prev) => {
             if (payload.eventType === 'INSERT') {
-              return [payload.new, ...prev]
+              // Aggiungo il nuovo log e riordino per done_at decrescente.
+              // Necessario perché un log con data passata (es. registrato a
+              // posteriori) deve apparire nella sua posizione cronologica,
+              // non sempre in cima.
+              const next = [payload.new, ...prev]
+              next.sort((a, b) => new Date(b.done_at) - new Date(a.done_at))
+              return next
             }
             if (payload.eventType === 'UPDATE') {
-              return prev.map((l) => (l.id === payload.new.id ? payload.new : l))
+              const next = prev.map((l) => (l.id === payload.new.id ? payload.new : l))
+              next.sort((a, b) => new Date(b.done_at) - new Date(a.done_at))
+              return next
             }
             if (payload.eventType === 'DELETE') {
               return prev.filter((l) => l.id !== payload.old.id)
             }
             return prev
           })
+          // se il log eliminato era quello aperto, chiudo il pannello
+          if (payload.eventType === 'DELETE') {
+            setExpandedId((curr) => (curr === payload.old.id ? null : curr))
+          }
         }
       )
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
   }, [])
+
+  function toggleExpanded(id) {
+    setExpandedId((curr) => (curr === id ? null : id))
+  }
+
+  async function handleDelete(log) {
+    const p = profileById.get(log.profile_id)
+    const who = p?.display_name ?? 'Qualcuno'
+    const ok = confirm(
+      `Eliminare la faccenda "${log.chore_name}" registrata da ${who}?\n\n` +
+      `Questa azione non si può annullare.`
+    )
+    if (!ok) return
+
+    setDeletingId(log.id)
+    // update ottimistico: la riga sparisce subito dalla UI
+    setLogs((prev) => prev.filter((l) => l.id !== log.id))
+    setExpandedId(null)
+
+    const { error } = await supabase.from('chore_logs').delete().eq('id', log.id)
+    if (error) {
+      // rollback: ripristino il log nella lista al posto giusto
+      setLogs((prev) => {
+        const next = [...prev, log]
+        next.sort((a, b) => new Date(b.done_at) - new Date(a.done_at))
+        return next
+      })
+      alert('Errore nella cancellazione: ' + error.message)
+    }
+    setDeletingId(null)
+  }
 
   const filtered = useMemo(() => {
     return logs.filter((l) => {
@@ -122,29 +171,63 @@ export default function ChoreHistory() {
         <ul className="space-y-2">
           {filtered.map((log) => {
             const p = profileById.get(log.profile_id)
+            const isOpen = expandedId === log.id
+            const isDeleting = deletingId === log.id
             return (
               <li
                 key={log.id}
-                className="bg-white rounded-2xl p-3 border border-sand flex items-start gap-3"
+                className={`bg-white rounded-2xl border border-sand transition ${
+                  isOpen ? 'ring-1 ring-ink/10' : ''
+                }`}
               >
-                <Avatar profile={p} size={38} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <div className="truncate">
-                      <span className="font-medium" style={{ color: p?.color }}>
-                        {p?.display_name ?? 'Qualcuno'}
-                      </span>
-                      <span className="text-muted"> ha fatto </span>
-                      <span className="font-medium">{log.chore_name}</span>
+                {/* Riga cliccabile: tap su un punto qualsiasi apre/chiude il pannello.
+                    Uso <button> per accessibilità (tastiera/screen reader). */}
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(log.id)}
+                  className="w-full p-3 flex items-start gap-3 text-left"
+                  aria-expanded={isOpen}
+                >
+                  <Avatar profile={p} size={38} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <div className="truncate">
+                        <span className="font-medium" style={{ color: p?.color }}>
+                          {p?.display_name ?? 'Qualcuno'}
+                        </span>
+                        <span className="text-muted"> ha fatto </span>
+                        <span className="font-medium">{log.chore_name}</span>
+                      </div>
+                      <div className="text-xs text-muted shrink-0">
+                        {timeAgo(log.done_at)}
+                      </div>
                     </div>
-                    <div className="text-xs text-muted shrink-0">
-                      {timeAgo(log.done_at)}
-                    </div>
+                    {log.notes && (
+                      <div className="text-sm text-muted mt-1 break-words">{log.notes}</div>
+                    )}
                   </div>
-                  {log.notes && (
-                    <div className="text-sm text-muted mt-1 break-words">{log.notes}</div>
-                  )}
-                </div>
+                </button>
+
+                {/* Mini-pannello azioni: appare solo quando la riga è aperta */}
+                {isOpen && (
+                  <div className="border-t border-sand px-3 py-2 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId(null)}
+                      className="rounded-xl px-3 py-1.5 text-sm text-muted hover:text-ink"
+                    >
+                      Annulla
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(log)}
+                      disabled={isDeleting}
+                      className="rounded-xl px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-60"
+                    >
+                      {isDeleting ? 'Elimino…' : 'Elimina'}
+                    </button>
+                  </div>
+                )}
               </li>
             )
           })}
