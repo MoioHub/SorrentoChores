@@ -48,19 +48,19 @@ export default function BottomNav() {
 function IconBroom(props) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M14 3l7 7" />
-      <path d="M5 21l6-6 3 3-6 6H5v-3z" />
-      <path d="M14 10l-3 3" />
-      <path d="M3 21l4-1 2-2-3-3-2 2-1 4z" />
+      <path d="M3 11.5L12 4l9 7.5" />
+	  <path d="M5 10v10h14V10" />
+	  <path d="M10 20v-6h4v6" />
     </svg>
   )
 }
 function IconCart(props) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M3 3h2l.6 3M7 13h11l2-8H5.4" />
-      <circle cx="9" cy="20" r="1.5" />
-      <circle cx="18" cy="20" r="1.5" />
+      <path d="M3 4h2l1 3" />
+      <path d="M6 7h15l-2 8H8z" />
+      <circle cx="10" cy="19" r="1.5" />
+      <circle cx="17" cy="19" r="1.5" />
     </svg>
   )
 }
